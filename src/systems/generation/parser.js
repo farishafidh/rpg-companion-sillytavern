@@ -556,12 +556,24 @@ export function parseCharacters(characterData) {
 
             for (let i = 0; i < enabledFields.length && i + 1 < parts.length; i++) {
                 const fieldName = enabledFields[i].name;
-                currentCharacter[fieldName] = parts[i + 1];
+                const value = parts[i + 1] || '';
+                currentCharacter[fieldName] = value;
+
+                // Detect lock
+                if (value.includes('🔒')) {
+                    if (!currentCharacter._lockedFields) currentCharacter._lockedFields = {};
+                    currentCharacter._lockedFields[fieldName] = true;
+                }
             }
         }
         // Check if this is a Relationship line
         else if (trimmed.startsWith('Relationship:') && currentCharacter) {
-            currentCharacter.Relationship = line.substring(line.indexOf(':') + 1).trim();
+            const value = line.substring(line.indexOf(':') + 1).trim();
+            currentCharacter.Relationship = value;
+            if (value.includes('🔒')) {
+                if (!currentCharacter._lockedFields) currentCharacter._lockedFields = {};
+                currentCharacter._lockedFields.Relationship = true;
+            }
         }
         // Check if this is a Stats line
         else if (trimmed.startsWith('Stats:') && currentCharacter) {
@@ -569,9 +581,16 @@ export function parseCharacters(characterData) {
             const statParts = statsContent.split('|').map(p => p.trim());
 
             for (const statPart of statParts) {
-                const statMatch = statPart.match(/^(.+?):\s*(\d+)%$/);
+                const statMatch = statPart.match(/^(.+?):\s*(\d+)%(.*)$/);
                 if (statMatch) {
-                    currentCharacter[statMatch[1].trim()] = parseInt(statMatch[2]);
+                    const statName = statMatch[1].trim();
+                    const value = parseInt(statMatch[2]);
+                    const extra = statMatch[3] || '';
+                    currentCharacter[statName] = value;
+                    if (extra.includes('🔒')) {
+                        if (!currentCharacter._lockedFields) currentCharacter._lockedFields = {};
+                        currentCharacter._lockedFields[statName] = true;
+                    }
                 }
             }
         }
@@ -580,6 +599,10 @@ export function parseCharacters(characterData) {
             const fieldName = trimmed.substring(0, trimmed.indexOf(':')).trim();
             const fieldValue = trimmed.substring(trimmed.indexOf(':') + 1).trim();
             currentCharacter[fieldName] = fieldValue;
+            if (fieldValue.includes('🔒')) {
+                if (!currentCharacter._lockedFields) currentCharacter._lockedFields = {};
+                currentCharacter._lockedFields[fieldName] = true;
+            }
         }
     }
 
@@ -589,6 +612,7 @@ export function parseCharacters(characterData) {
 /**
  * Merges new character data with old character data to ensure persistence.
  * Existing characters not present in newData are preserved.
+ * Respects 🔒 icons in old data to prevent overwriting locked fields.
  *
  * @param {string} oldDataString - Previous character thoughts data
  * @param {string} newDataString - New character thoughts data from AI
@@ -611,14 +635,32 @@ export function mergeCharacterThoughts(oldDataString, newDataString) {
     newChars.forEach(newChar => {
         const lowerName = newChar.name.toLowerCase();
         if (charMap.has(lowerName)) {
-            // Merge fields: overwrite old with new
-            const mergedChar = { ...charMap.get(lowerName), ...newChar };
+            const oldChar = charMap.get(lowerName);
+
+            // Merge fields: overwrite old with new, UNLESS old field is locked
+            const mergedChar = { ...oldChar };
+
+            // Check all keys in newChar
+            Object.keys(newChar).forEach(key => {
+                if (key === 'name' || key === '_lockedFields') return;
+
+                // If old field was locked, do not overwrite
+                if (oldChar._lockedFields && oldChar._lockedFields[key]) {
+                    // Keep old value (which contains the 🔒)
+                    return;
+                }
+
+                // Otherwise update
+                mergedChar[key] = newChar[key];
+            });
+
             charMap.set(lowerName, mergedChar);
         } else {
             // Add new character
             charMap.set(lowerName, newChar);
         }
     });
+
 
     // Re-serialize to string format
     const trackerConfig = extensionSettings.trackerConfig?.presentCharacters;

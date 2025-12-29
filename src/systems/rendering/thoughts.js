@@ -464,9 +464,15 @@ export function renderThoughts() {
                 // Render custom fields dynamically
                 for (const field of enabledFields) {
                     const fieldValue = char[field.name] || '';
+                    const isLocked = char._lockedFields && char._lockedFields[field.name];
                     const fieldId = field.name.toLowerCase().replace(/\s+/g, '-');
+                    const displayValue = typeof fieldValue === 'string' ? fieldValue.replace('🔒', '').trim() : fieldValue;
+
                     html += `
-                                <div class="rpg-character-field rpg-character-${fieldId} rpg-editable" contenteditable="true" data-character="${escapedName}" data-field="${escapeHtmlAttr(field.name)}" title="Click to edit ${field.name}">${fieldValue}</div>
+                                <div class="rpg-character-field-container">
+                                    <div class="rpg-character-field rpg-character-${fieldId} rpg-editable" contenteditable="true" data-character="${escapedName}" data-field="${escapeHtmlAttr(field.name)}" title="Click to edit ${field.name}">${displayValue}</div>
+                                    <span class="rpg-field-lock ${isLocked ? 'rpg-field-locked' : ''}" data-character="${escapedName}" data-field="${escapeHtmlAttr(field.name)}" title="${isLocked ? 'Unlock field' : 'Lock field (AI won\'t change it)'}">${isLocked ? '🔒' : '🔓'}</span>
+                                </div>
                     `;
                 }
 
@@ -479,10 +485,13 @@ export function renderThoughts() {
                     html += `<div class="rpg-character-stats"><div class="rpg-character-stats-inner">`;
                     for (const stat of enabledCharStats) {
                         const statValue = char[stat.name] || 0;
+                        const isLocked = char._lockedFields && char._lockedFields[stat.name];
                         const statColor = getStatColor(statValue, extensionSettings.statBarColorLow, extensionSettings.statBarColorHigh);
                         html += `
                                 <div class="rpg-character-stat">
-                                    <span class="rpg-stat-name">${stat.name}: </span><span class="rpg-editable" contenteditable="true" data-character="${escapedName}" data-field="${escapeHtmlAttr(stat.name)}" style="color: ${statColor}" title="Click to edit ${stat.name}">${statValue}%</span>
+                                    <span class="rpg-stat-name">${stat.name}: </span>
+                                    <span class="rpg-editable" contenteditable="true" data-character="${escapedName}" data-field="${escapeHtmlAttr(stat.name)}" style="color: ${statColor}" title="Click to edit ${stat.name}">${statValue}%</span>
+                                    <span class="rpg-field-lock ${isLocked ? 'rpg-field-locked' : ''}" data-character="${escapedName}" data-field="${escapeHtmlAttr(stat.name)}" title="${isLocked ? 'Unlock field' : 'Lock field (AI won\'t change it)'}">${isLocked ? '🔒' : '🔓'}</span>
                                 </div>
                         `;
                     }
@@ -578,6 +587,15 @@ export function renderThoughts() {
 
         // Re-render to show the new avatar (or fallback)
         renderThoughts();
+    });
+
+    // Add event handler for field locks
+    $thoughtsContainer.find('.rpg-field-lock').on('click', function (e) {
+        e.stopPropagation();
+        const character = $(this).data('character');
+        const field = $(this).data('field');
+        console.log('[RPG Companion] Toggling field lock:', { character, field });
+        toggleFieldLock(character, field);
     });
 
     // Add event handler for character removal
@@ -676,21 +694,25 @@ export function updateCharacterField(characterName, field, value) {
                 if (fieldIndex !== -1) {
                     const parts = line.substring(line.indexOf(':') + 1).split('|').map(p => p.trim());
                     if (parts.length > fieldIndex + 1) {
-                        parts[fieldIndex + 1] = value;
+                        const wasLocked = parts[fieldIndex + 1].includes('🔒');
+                        parts[fieldIndex + 1] = wasLocked ? `${value} 🔒` : value;
                         lines[i] = `Details: ${parts.join(' | ')}`;
                     }
                 }
             }
             else if (field === 'Relationship' && line.startsWith('Relationship:')) {
+                const wasLocked = line.includes('🔒');
                 const emojiToRelationship = { '⚔️': 'Enemy', '⚖️': 'Neutral', '⭐': 'Friend', '❤️': 'Lover' };
                 const relationshipValue = emojiToRelationship[value] || value;
-                lines[i] = `Relationship: ${relationshipValue}`;
+                lines[i] = `Relationship: ${relationshipValue}${wasLocked ? ' 🔒' : ''}`;
             }
             else if (isThoughtsField && line.startsWith(thoughtsFieldName + ':')) {
+                const wasLocked = line.includes('🔒');
                 // Update thoughts field
-                lines[i] = `${thoughtsFieldName}: ${value}`;
+                lines[i] = `${thoughtsFieldName}: ${value}${wasLocked ? ' 🔒' : ''}`;
                 console.log('[RPG Companion] Updated thoughts:', lines[i]);
             }
+
         }
 
         // Handle stat updates
@@ -714,12 +736,14 @@ export function updateCharacterField(characterName, field, value) {
                 let statFound = false;
                 for (let j = 0; j < statParts.length; j++) {
                     if (statParts[j].startsWith(field + ':')) {
-                        statParts[j] = `${field}: ${numValue}%`;
+                        const wasLocked = statParts[j].includes('🔒');
+                        statParts[j] = `${field}: ${numValue}%${wasLocked ? ' 🔒' : ''}`;
                         statFound = true;
                         console.log('[RPG Companion] Updated stat part:', statParts[j]);
                         break;
                     }
                 }
+
 
                 // If stat wasn't found in existing parts, add it
                 if (!statFound) {
@@ -830,7 +854,121 @@ export function updateCharacterField(characterName, field, value) {
  * Updates or removes thought overlays in the chat.
  * Creates floating thought bubbles positioned near character avatars.
  */
+/**
+ * Toggles the lock status (🔒) of a character field.
+ * Locked fields are not overwritten by the AI during merging.
+ *
+ * @param {string} characterName - Name of the character
+ * @param {string} field - Field name to toggle lock for
+ */
+export function toggleFieldLock(characterName, field) {
+    if (!lastGeneratedData.characterThoughts) return;
+
+    const lines = lastGeneratedData.characterThoughts.split('\n');
+    const presentCharsConfig = extensionSettings.trackerConfig?.presentCharacters;
+    const enabledFields = presentCharsConfig?.customFields?.filter(f => f && f.enabled && f.name) || [];
+    const characterStats = presentCharsConfig?.characterStats;
+    const enabledCharStats = characterStats?.enabled && characterStats?.customStats?.filter(s => s && s.enabled && s.name) || [];
+
+    let characterFound = false;
+    let inTargetCharacter = false;
+    let characterStartIndex = -1;
+    let characterEndIndex = -1;
+
+    // Find the character block
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('- ')) {
+            const name = line.substring(2).trim();
+            if (name.toLowerCase() === characterName.toLowerCase()) {
+                characterFound = true;
+                inTargetCharacter = true;
+                characterStartIndex = i;
+            } else if (inTargetCharacter) {
+                characterEndIndex = i;
+                break;
+            }
+        }
+    }
+    if (characterFound && characterEndIndex === -1) characterEndIndex = lines.length;
+
+    if (!characterFound) return;
+
+    const isStatField = enabledCharStats.findIndex(s => s.name === field) !== -1;
+    const thoughtsFieldName = presentCharsConfig?.thoughts?.name || 'Thoughts';
+    const isThoughtsField = field.toLowerCase() === 'thoughts' || field === thoughtsFieldName;
+
+    for (let i = characterStartIndex; i < characterEndIndex; i++) {
+        const line = lines[i].trim();
+
+        if (isStatField && line.startsWith('Stats:')) {
+            const statsContent = line.substring(line.indexOf(':') + 1).trim();
+            const statParts = statsContent.split('|').map(p => p.trim());
+            for (let j = 0; j < statParts.length; j++) {
+                if (statParts[j].startsWith(field + ':')) {
+                    if (statParts[j].includes('🔒')) {
+                        statParts[j] = statParts[j].replace('🔒', '').trim();
+                    } else {
+                        statParts[j] = statParts[j] + ' 🔒';
+                    }
+                    break;
+                }
+            }
+            lines[i] = `Stats: ${statParts.join(' | ')}`;
+        } else if (field === 'Relationship' && line.startsWith('Relationship:')) {
+            if (line.includes('🔒')) {
+                lines[i] = line.replace('🔒', '').trim();
+            } else {
+                lines[i] = line + ' 🔒';
+            }
+        } else if (line.startsWith('Details:')) {
+            const fieldIndex = enabledFields.findIndex(f => f.name === field);
+            if (fieldIndex !== -1) {
+                const parts = line.substring(line.indexOf(':') + 1).split('|').map(p => p.trim());
+                if (parts.length > fieldIndex + 1) {
+                    if (parts[fieldIndex + 1].includes('🔒')) {
+                        parts[fieldIndex + 1] = parts[fieldIndex + 1].replace('🔒', '').trim();
+                    } else {
+                        parts[fieldIndex + 1] = parts[fieldIndex + 1] + ' 🔒';
+                    }
+                    lines[i] = `Details: ${parts.join(' | ')}`;
+                }
+            }
+        } else if (isThoughtsField && line.startsWith(thoughtsFieldName + ':')) {
+            if (line.includes('🔒')) {
+                lines[i] = line.replace('🔒', '').trim();
+            } else {
+                lines[i] = line + ' 🔒';
+            }
+        }
+    }
+
+    lastGeneratedData.characterThoughts = lines.join('\n');
+    committedTrackerData.characterThoughts = lines.join('\n');
+
+    // Update swipe data
+    const chat = getContext().chat;
+    if (chat && chat.length > 0) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            const message = chat[i];
+            if (!message.is_user) {
+                if (message.extra && message.extra.rpg_companion_swipes) {
+                    const swipeId = message.swipe_id || 0;
+                    if (message.extra.rpg_companion_swipes[swipeId]) {
+                        message.extra.rpg_companion_swipes[swipeId].characterThoughts = lines.join('\n');
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    saveChatData();
+    renderThoughts();
+}
+
 export function updateChatThoughts() {
+
     // console.log('[RPG Companion] ======== updateChatThoughts called ========');
     // console.log('[RPG Companion] Extension enabled:', extensionSettings.enabled);
     // console.log('[RPG Companion] showThoughtsInChat setting:', extensionSettings.showThoughtsInChat);
