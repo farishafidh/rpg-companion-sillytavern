@@ -18,6 +18,7 @@ import { saveChatData } from '../../core/persistence.js';
 import { getSafeThumbnailUrl } from '../../utils/avatars.js';
 import { saveSettings } from '../../core/persistence.js';
 import { isGenerating, regenerateAvatar } from '../features/avatarGenerator.js';
+import { parseCharacters } from '../generation/parser.js';
 
 /**
  * Helper to log to both console and debug logs array
@@ -332,110 +333,9 @@ export function renderThoughts() {
     debugLog('[RPG Thoughts] Enabled custom fields:', enabledFields.map(f => f.name));
     debugLog('[RPG Thoughts] Enabled character stats:', enabledCharStats.map(s => s.name));
 
-    const lines = characterThoughtsData.split('\n');
-    const presentCharacters = [];
+    // Parse characters using shared parser logic
+    const presentCharacters = parseCharacters(characterThoughtsData);
 
-    debugLog('[RPG Thoughts] Split into lines count:', lines.length);
-    debugLog('[RPG Thoughts] Lines:', lines);
-
-    // Parse new multi-line format:
-    // - [Name]
-    // Details: [Emoji] | [Field1] | [Field2] | ...
-    // Relationship: [Relationship]
-    // Stats: Stat1: X% | Stat2: X% | ...
-    // Thoughts: [Description]
-    let lineNumber = 0;
-    let currentCharacter = null;
-
-    // Pre-process: normalize the format to handle cases where "- char" appears mid-line
-    // This handles: "Thoughts: ... - char 2" by splitting it into separate lines
-    const normalizedLines = [];
-    for (let line of lines) {
-        // Check if line contains "- [name]" pattern after some content (not at start)
-        // Match pattern like "some text - CharName" where there's content before the dash
-        const midLineCharMatch = line.match(/^(.+?)\s+-\s+([A-Z][a-zA-Z\s]+)$/);
-        if (midLineCharMatch && !line.trim().startsWith('- ')) {
-            // Split: first part stays as one line, "- Name" becomes new line
-            normalizedLines.push(midLineCharMatch[1].trim());
-            normalizedLines.push('- ' + midLineCharMatch[2].trim());
-        } else {
-            normalizedLines.push(line);
-        }
-    }
-
-    for (const line of normalizedLines) {
-        lineNumber++;
-
-        // Skip empty lines, headers, dividers, and code fences
-        if (!line.trim() ||
-            line.includes('Present Characters') ||
-            line.includes('---') ||
-            line.trim().startsWith('```') ||
-            line.trim() === '- …' ||
-            line.includes('(Repeat the format')) {
-            continue;
-        }
-
-        debugLog(`[RPG Thoughts] Processing line ${lineNumber}:`, line);
-
-        // Check if this is a character name line (starts with "- ")
-        if (line.trim().startsWith('- ')) {
-            const name = line.trim().substring(2).trim();
-
-            if (name && name.toLowerCase() !== 'unavailable') {
-                currentCharacter = { name };
-                presentCharacters.push(currentCharacter);
-                debugLog(`[RPG Thoughts] ✓ Started new character: ${name}`);
-            } else {
-                currentCharacter = null;
-                debugLog(`[RPG Thoughts] ✗ Rejected character - name: "${name}" (unavailable or empty)`);
-            }
-        }
-        // Check if this is a Details line
-        else if (line.trim().startsWith('Details:') && currentCharacter) {
-            const detailsContent = line.substring(line.indexOf(':') + 1).trim();
-            const parts = detailsContent.split('|').map(p => p.trim());
-
-            // First part is the emoji
-            if (parts.length > 0) {
-                currentCharacter.emoji = parts[0];
-                debugLog(`[RPG Thoughts] Parsed emoji: ${parts[0]}`);
-            }
-
-            // Remaining parts are custom fields
-            for (let i = 0; i < enabledFields.length && i + 1 < parts.length; i++) {
-                const fieldName = enabledFields[i].name;
-                currentCharacter[fieldName] = parts[i + 1];
-                debugLog(`[RPG Thoughts] Parsed field ${fieldName}: ${parts[i + 1]}`);
-            }
-        }
-        // Check if this is a Relationship line
-        else if (line.trim().startsWith('Relationship:') && currentCharacter) {
-            const relationship = line.substring(line.indexOf(':') + 1).trim();
-            currentCharacter.Relationship = relationship;
-            debugLog(`[RPG Thoughts] Parsed relationship: ${relationship}`);
-        }
-        // Check if this is a Stats line
-        else if (line.trim().startsWith('Stats:') && currentCharacter && enabledCharStats.length > 0) {
-            const statsContent = line.substring(line.indexOf(':') + 1).trim();
-            const statParts = statsContent.split('|').map(p => p.trim());
-
-            for (const statPart of statParts) {
-                const statMatch = statPart.match(/^(.+?):\s*(\d+)%$/);
-                if (statMatch) {
-                    const statName = statMatch[1].trim();
-                    const statValue = parseInt(statMatch[2]);
-                    currentCharacter[statName] = statValue;
-                    debugLog(`[RPG Thoughts] Parsed stat: ${statName} = ${statValue}%`);
-                }
-            }
-        }
-        // Check if this is a Thoughts line (handled separately for thought bubbles)
-        else if (line.trim().match(/^[A-Z][a-z]+:/) && currentCharacter) {
-            // This could be Thoughts, Feelings, etc. - skip for now, handled in thought bubble rendering
-            debugLog(`[RPG Thoughts] Skipping thoughts/feelings line (handled in bubble rendering)`);
-        }
-    }
 
     // Get relationship emojis from config (with fallback defaults)
     const relationshipEmojis = config?.relationshipEmojis || {
@@ -474,8 +374,8 @@ export function renderThoughts() {
         const escapedDefaultName = escapeHtmlAttr(defaultName);
 
         // Determine right-click action text based on auto-generate setting
-        const defaultAvatarRightClickAction = extensionSettings.autoGenerateAvatars 
-            ? 'Right-click to regenerate avatar' 
+        const defaultAvatarRightClickAction = extensionSettings.autoGenerateAvatars
+            ? 'Right-click to regenerate avatar'
             : 'Right-click to delete avatar';
 
         html += '<div class="rpg-thoughts-content">';
@@ -541,8 +441,8 @@ export function renderThoughts() {
                 const isCurrentlyGenerating = isGenerating(char.name);
 
                 // Determine right-click action text based on auto-generate setting
-                const avatarRightClickAction = extensionSettings.autoGenerateAvatars 
-                    ? 'Right-click to regenerate avatar' 
+                const avatarRightClickAction = extensionSettings.autoGenerateAvatars
+                    ? 'Right-click to regenerate avatar'
                     : 'Right-click to delete avatar';
 
                 html += `
@@ -613,7 +513,7 @@ export function renderThoughts() {
     debugLog('[RPG Thoughts] =======================================================');
 
     // Add event handlers for editable character fields
-    $thoughtsContainer.find('.rpg-editable').on('blur', function() {
+    $thoughtsContainer.find('.rpg-editable').on('blur', function () {
         const character = $(this).data('character');
         const field = $(this).data('field');
         const value = $(this).text().trim();
@@ -622,7 +522,7 @@ export function renderThoughts() {
     });
 
     // Add event handler for avatar uploads
-    $thoughtsContainer.find('.rpg-avatar-upload').on('click', function(e) {
+    $thoughtsContainer.find('.rpg-avatar-upload').on('click', function (e) {
         // Prevent triggering if clicking on the relationship badge
         if ($(e.target).hasClass('rpg-relationship-badge') || $(e.target).closest('.rpg-relationship-badge').length > 0) {
             return;
@@ -634,7 +534,7 @@ export function renderThoughts() {
     });
 
     // Add event handler for regenerating avatars (right-click)
-    $thoughtsContainer.find('.rpg-avatar-upload').on('contextmenu', async function(e) {
+    $thoughtsContainer.find('.rpg-avatar-upload').on('contextmenu', async function (e) {
         // Prevent triggering if clicking on the relationship badge
         if ($(e.target).hasClass('rpg-relationship-badge') || $(e.target).closest('.rpg-relationship-badge').length > 0) {
             return;
@@ -666,7 +566,7 @@ export function renderThoughts() {
         try {
             // Regenerate the avatar
             const newUrl = await regenerateAvatar(characterName);
-            
+
             if (newUrl) {
                 console.log(`[RPG Companion] Successfully regenerated avatar for: ${characterName}`);
             } else {
@@ -681,7 +581,7 @@ export function renderThoughts() {
     });
 
     // Add event handler for character removal
-    $thoughtsContainer.find('.rpg-character-remove').on('click', function(e) {
+    $thoughtsContainer.find('.rpg-character-remove').on('click', function (e) {
         e.stopPropagation(); // Prevent event bubbling
         const characterName = $(this).data('character');
         removeCharacter(characterName);
@@ -1241,14 +1141,14 @@ export function createThoughtPanel($message, thoughtsArray) {
         $thoughtIcon.show();
 
         // Close button functionality - only when always show is disabled
-        $thoughtPanel.find('.rpg-thought-close').on('click', function(e) {
+        $thoughtPanel.find('.rpg-thought-close').on('click', function (e) {
             e.stopPropagation();
             $thoughtPanel.fadeOut(200);
             $thoughtIcon.fadeIn(200);
         });
 
         // Icon click to show panel - only when always show is disabled
-        $thoughtIcon.on('click', function(e) {
+        $thoughtIcon.on('click', function (e) {
             e.stopPropagation();
             $thoughtIcon.fadeOut(200);
             $thoughtPanel.fadeIn(200);
@@ -1258,7 +1158,7 @@ export function createThoughtPanel($message, thoughtsArray) {
     // console.log('[RPG Companion] Thought panel created at:', { top, left });
 
     // Add event handlers for editable thoughts in the bubble
-    $thoughtPanel.find('.rpg-editable').on('blur', function() {
+    $thoughtPanel.find('.rpg-editable').on('blur', function () {
         const character = $(this).data('character');
         const field = $(this).data('field');
         const value = $(this).text().trim();
@@ -1336,7 +1236,7 @@ export function createThoughtPanel($message, thoughtsArray) {
 
     // Remove panel when clicking outside - only if always show is disabled
     if (!extensionSettings.alwaysShowThoughtBubble) {
-        $(document).on('click.thoughtPanel', function(e) {
+        $(document).on('click.thoughtPanel', function (e) {
             if (!$(e.target).closest('#rpg-thought-panel, #rpg-thought-icon').length) {
                 // Hide the panel and show the icon instead of removing
                 $thoughtPanel.fadeOut(200);
