@@ -491,3 +491,168 @@ export function isInfoBoxSection(content) {
 export function isCharacterThoughtsSection(content) {
     return content.match(/Present Characters\s*\n\s*---/i) !== null || content.includes(" | ");
 }
+
+/**
+ * Parses character data from a string into an array of character objects.
+ * Handles the multi-line format used in the Present Characters tracker.
+ *
+ * @param {string} characterData - Raw character thoughts data string
+ * @returns {Array<Object>} Array of character objects
+ */
+export function parseCharacters(characterData) {
+    if (!characterData) return [];
+
+    const lines = characterData.split('\n');
+    const presentCharacters = [];
+
+    // Pre-process: normalize the format to handle cases where "- char" appears mid-line
+    const normalizedLines = [];
+    for (let line of lines) {
+        const midLineCharMatch = line.match(/^(.+?)\s+-\s+([A-Z][a-zA-Z\s]+)$/);
+        if (midLineCharMatch && !line.trim().startsWith('- ')) {
+            normalizedLines.push(midLineCharMatch[1].trim());
+            normalizedLines.push('- ' + midLineCharMatch[2].trim());
+        } else {
+            normalizedLines.push(line);
+        }
+    }
+
+    let currentCharacter = null;
+    const trackerConfig = extensionSettings.trackerConfig?.presentCharacters;
+    const enabledFields = trackerConfig?.customFields?.filter(f => f && f.enabled && f.name) || [];
+    const characterStatsConfig = trackerConfig?.characterStats;
+    const enabledCharStats = characterStatsConfig?.enabled && characterStatsConfig?.customStats?.filter(s => s && s.enabled && s.name) || [];
+
+    for (const line of normalizedLines) {
+        const trimmed = line.trim();
+
+        if (!trimmed ||
+            trimmed.includes('Present Characters') ||
+            trimmed.includes('---') ||
+            trimmed.startsWith('```') ||
+            trimmed === '- …' ||
+            trimmed.includes('(Repeat the format')) {
+            continue;
+        }
+
+        // Check if this is a character name line (starts with "- ")
+        if (trimmed.startsWith('- ')) {
+            const name = trimmed.substring(2).trim();
+            if (name && name.toLowerCase() !== 'unavailable') {
+                currentCharacter = { name };
+                presentCharacters.push(currentCharacter);
+            } else {
+                currentCharacter = null;
+            }
+        }
+        // Check if this is a Details line
+        else if (trimmed.startsWith('Details:') && currentCharacter) {
+            const detailsContent = line.substring(line.indexOf(':') + 1).trim();
+            const parts = detailsContent.split('|').map(p => p.trim());
+
+            if (parts.length > 0) {
+                currentCharacter.emoji = parts[0];
+            }
+
+            for (let i = 0; i < enabledFields.length && i + 1 < parts.length; i++) {
+                const fieldName = enabledFields[i].name;
+                currentCharacter[fieldName] = parts[i + 1];
+            }
+        }
+        // Check if this is a Relationship line
+        else if (trimmed.startsWith('Relationship:') && currentCharacter) {
+            currentCharacter.Relationship = line.substring(line.indexOf(':') + 1).trim();
+        }
+        // Check if this is a Stats line
+        else if (trimmed.startsWith('Stats:') && currentCharacter) {
+            const statsContent = line.substring(line.indexOf(':') + 1).trim();
+            const statParts = statsContent.split('|').map(p => p.trim());
+
+            for (const statPart of statParts) {
+                const statMatch = statPart.match(/^(.+?):\s*(\d+)%$/);
+                if (statMatch) {
+                    currentCharacter[statMatch[1].trim()] = parseInt(statMatch[2]);
+                }
+            }
+        }
+        // Check if this is a Thoughts line (or other Capitalized: content)
+        else if (trimmed.match(/^[A-Z][A-Za-z]+:/) && currentCharacter) {
+            const fieldName = trimmed.substring(0, trimmed.indexOf(':')).trim();
+            const fieldValue = trimmed.substring(trimmed.indexOf(':') + 1).trim();
+            currentCharacter[fieldName] = fieldValue;
+        }
+    }
+
+    return presentCharacters;
+}
+
+/**
+ * Merges new character data with old character data to ensure persistence.
+ * Existing characters not present in newData are preserved.
+ *
+ * @param {string} oldDataString - Previous character thoughts data
+ * @param {string} newDataString - New character thoughts data from AI
+ * @returns {string} Merged character thoughts data string
+ */
+export function mergeCharacterThoughts(oldDataString, newDataString) {
+    if (!newDataString) return oldDataString;
+    if (!oldDataString) return newDataString;
+
+    const oldChars = parseCharacters(oldDataString);
+    const newChars = parseCharacters(newDataString);
+
+    if (newChars.length === 0) return oldDataString;
+
+    // Create a map of characters by name for easy lookup (case-insensitive)
+    const charMap = new Map();
+    oldChars.forEach(char => charMap.set(char.name.toLowerCase(), char));
+
+    // Update with new data
+    newChars.forEach(newChar => {
+        const lowerName = newChar.name.toLowerCase();
+        if (charMap.has(lowerName)) {
+            // Merge fields: overwrite old with new
+            const mergedChar = { ...charMap.get(lowerName), ...newChar };
+            charMap.set(lowerName, mergedChar);
+        } else {
+            // Add new character
+            charMap.set(lowerName, newChar);
+        }
+    });
+
+    // Re-serialize to string format
+    const trackerConfig = extensionSettings.trackerConfig?.presentCharacters;
+    const enabledFields = trackerConfig?.customFields?.filter(f => f && f.enabled && f.name) || [];
+    const characterStatsConfig = trackerConfig?.characterStats;
+    const enabledCharStats = characterStatsConfig?.enabled && characterStatsConfig?.customStats?.filter(s => s && s.enabled && s.name) || [];
+    const thoughtsFieldName = trackerConfig?.thoughts?.name || 'Thoughts';
+
+    let result = 'Present Characters\n---\n';
+
+    charMap.forEach(char => {
+        result += `- ${char.name}\n`;
+
+        // Build Details line
+        let details = `Details: ${char.emoji || '👤'}`;
+        for (const field of enabledFields) {
+            details += ` | ${char[field.name] || ''}`;
+        }
+        result += details + '\n';
+
+        if (char.Relationship) {
+            result += `Relationship: ${char.Relationship}\n`;
+        }
+
+        if (enabledCharStats.length > 0) {
+            const stats = enabledCharStats.map(s => `${s.name}: ${char[s.name] ?? 0}%`).join(' | ');
+            if (stats) result += `Stats: ${stats}\n`;
+        }
+
+        if (char[thoughtsFieldName]) {
+            result += `${thoughtsFieldName}: ${char[thoughtsFieldName]}\n`;
+        }
+    });
+
+    return result.trim();
+}
+

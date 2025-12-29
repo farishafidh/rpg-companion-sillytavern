@@ -21,7 +21,7 @@ import {
 import { saveChatData, loadChatData } from '../../core/persistence.js';
 
 // Generation & Parsing
-import { parseResponse, parseUserStats } from '../generation/parser.js';
+import { parseResponse, parseUserStats, mergeCharacterThoughts } from '../generation/parser.js';
 import { updateRPGData } from '../generation/apiClient.js';
 
 // Rendering
@@ -130,10 +130,18 @@ export async function onMessageReceived(data) {
                 lastGeneratedData.infoBox = parsedData.infoBox;
             }
             if (parsedData.characterThoughts) {
-                lastGeneratedData.characterThoughts = parsedData.characterThoughts;
+                // Merge new character data with existing data to ensure persistence
+                const mergedThoughts = mergeCharacterThoughts(
+                    committedTrackerData.characterThoughts || lastGeneratedData.characterThoughts,
+                    parsedData.characterThoughts
+                );
+                lastGeneratedData.characterThoughts = mergedThoughts;
+                // Update parsed data for storage in swipe
+                parsedData.characterThoughts = mergedThoughts;
             }
 
             // Store RPG data for this specific swipe in the message's extra field
+
             if (!lastMessage.extra) {
                 lastMessage.extra = {};
             }
