@@ -338,6 +338,8 @@ export function generateTrackerInstructions(includeHtmlPrompt = true, includeCon
         }
 
         if (extensionSettings.showCharacterThoughts) {
+            instructions += 'You must ALSO provide a "Present Characters" tracker in a code block.\n';
+            instructions += 'Strict Lore Adherence: Physical traits (hair color, eye color, height, etc.) MUST strictly match the character\'s definition in the World Info / Lorebook. Do not hallucinate or change these permanent traits unless the story explicitly describes a permanent physical transformation. If a field is already occupied by a factual trait, do not change it.\n';
             const presentCharsConfig = trackerConfig?.presentCharacters;
             const enabledFields = presentCharsConfig?.customFields?.filter(f => f && f.enabled && f.name) || [];
             const relationshipFields = presentCharsConfig?.relationshipFields || [];
@@ -469,8 +471,8 @@ export function generateContextualSummary() {
             .filter(line => {
                 const trimmed = line.trim();
                 return trimmed &&
-                       !trimmed.startsWith('```') &&
-                       trimmed !== '---';
+                    !trimmed.startsWith('```') &&
+                    trimmed !== '---';
             })
             .join('\n');
     };
